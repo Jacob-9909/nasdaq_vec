@@ -21,6 +21,9 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 load_dotenv()
 
+import nltk
+nltk.download('punkt')
+
 # 인증 파일 경로 및 권한 설정
 SERVICE_ACCOUNT_FILE = 'credentials.json'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
@@ -75,8 +78,29 @@ def create_vectorstore(docs):
     vectorstore = Chroma.from_documents(docs, embedding)
     return vectorstore.as_retriever()
 
+# 텍스트 형식화
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+# BLEU 점수를 계산하는 유사도 계산 함수
+def calculate_similarity(output, reference):
+    """
+    출력 결과와 기준 데이터 간의 BLEU 점수를 계산합니다.
+    """
+    from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+
+    # 출력과 기준 데이터를 토큰화
+    output_tokens = output.split()
+    reference_tokens = [reference.split()]  # BLEU는 참조를 리스트의 리스트로 받음
+
+    # BLEU 점수 계산
+    smoothing_function = SmoothingFunction().method1  # 점수 안정화를 위한 스무딩
+    bleu_score = sentence_bleu(reference_tokens, output_tokens, smoothing_function=smoothing_function)
+
+    return bleu_score
+
 # RAG 체인 설정 및 실행
-def run_rag_chain(retriever, query):
+def run_rag_chain(retriever, query, reference):
     prompt = hub.pull("rlm/rag-prompt")
     rag_chain = (
         {"context": retriever | format_docs, "question": RunnablePassthrough()}
@@ -84,12 +108,16 @@ def run_rag_chain(retriever, query):
         | ChatOllama(model="EEVE-Korean-10.8B:latest")
         | StrOutputParser()
     )
+    
+    # 출력 결과 저장
+    output = ""
     for chunk in rag_chain.stream(query):
         print(chunk, end="", flush=True)
+        output += chunk
 
-# 텍스트 형식화
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    # BLEU 점수를 사용한 유사도 평가
+    bleu_score = calculate_similarity(output, reference)
+    print(f"\n\n[BLEU 점수]: {bleu_score:.2f}")
 
 # 전체 실행 함수
 def main():
@@ -107,8 +135,12 @@ def main():
     docs = load_and_split_csv("merged_data.csv")
     retriever = create_vectorstore(docs)
 
+    # 사용자 입력 받기
+    query = input("질문을 입력하세요: ")
+    reference = input("기준 데이터를 입력하세요: ")
+
     # RAG 체인 실행
-    run_rag_chain(retriever, "나스닥의 뉴스 내용에 대한 분석을 진행해줘")
+    run_rag_chain(retriever, query, reference)
 
 if __name__ == '__main__':
     main()
