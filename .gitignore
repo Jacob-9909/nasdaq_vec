@@ -1,0 +1,7 @@
+*.json
+*.csv
+*.gguf
+*.txt
+*.bin
+*.sqlite3
+*.pickle

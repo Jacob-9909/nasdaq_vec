@@ -91,15 +91,17 @@ def merge_csv(files, service):
         dfs.append(df)
 
     merged_df = pd.concat(dfs, ignore_index=True)
-    merged_df = merged_df.drop_duplicates(subset=['content'])  # content 열 기준으로 중복 제거
+    merged_df = merged_df.drop_duplicates(subset=['title'])  # content 열 기준으로 중복 제거
     merged_df.to_csv('merged_data.csv', index=False)
     print("CSV files merged successfully with special character and whitespace handling.")
 
 # CSV 파일 로드 및 텍스트 분할
-def load_and_split_csv(file_path, column_name="content"):
+def load_and_split_csv(file_path, column_name="content", chunk_size=1000, chunk_overlap=100):
     loader = CSVLoader(file_path=file_path, source_column=column_name, encoding="utf-8")
     pages = loader.load_and_split()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+
+    # 동적 chunk_size와 chunk_overlap 적용
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     docs = text_splitter.split_documents(pages)
     return docs
 
@@ -303,7 +305,7 @@ def main():
                         st.write("🔍 관련 문맥:")
                         for context in contexts:
                             highlighted_context = context.replace(query, f"**{query}**")  # 간단한 하이라이트
-                            st.markdown(f"- {highlighted_context}")
+                            st.markdown(f"{highlighted_context}")
 
                     except Exception as e:
                         st.error(f"🚨 RAG 체인 실행 중 오류가 발생했습니다: {e}")
