@@ -34,12 +34,24 @@ nltk.download('punkt')
 SERVICE_ACCOUNT_FILE = 'credentials.json'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
-# 사용자 피드백 저장을 위한 파일 경로
-FEEDBACK_FILE = "feedback_log.csv"
+# 피드백 저장을 위한 디렉토리와 파일 경로 설정
+FEEDBACK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback")
+FEEDBACK_FILE = os.path.join(FEEDBACK_DIR, "feedback_log.csv")
 
 # 사용자 피드백 저장 함수
 def save_feedback(query, output, feedback):
     from datetime import datetime
+    
+    # 피드백 디렉토리가 없으면 생성
+    if not os.path.exists(FEEDBACK_DIR):
+        try:
+            os.makedirs(FEEDBACK_DIR)
+            print(f"피드백 디렉토리 생성됨: {FEEDBACK_DIR}")
+        except Exception as e:
+            error_msg = f"피드백 디렉토리 생성 중 오류 발생: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            st.error(error_msg)
+            return
     
     feedback_data = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -51,23 +63,50 @@ def save_feedback(query, output, feedback):
     try:
         if not os.path.exists(FEEDBACK_FILE):
             # 새 파일 생성
-            pd.DataFrame([feedback_data]).to_csv(FEEDBACK_FILE, index=False, encoding='utf-8-sig')
-            st.success(f"피드백이 성공적으로 저장되었습니다.")
+            df = pd.DataFrame([feedback_data])
+            try:
+                df.to_csv(FEEDBACK_FILE, index=False, encoding='utf-8-sig', mode='w')
+                print(f"새 피드백 파일 생성됨: {FEEDBACK_FILE}")
+                st.success("피드백이 성공적으로 저장되었습니다.")
+            except Exception as e:
+                error_msg = f"새 파일 생성 중 오류 발생: {str(e)}"
+                print(f"[ERROR] {error_msg}")
+                st.error(error_msg)
+                return
         else:
             try:
                 # 기존 파일 읽기
                 existing_data = pd.read_csv(FEEDBACK_FILE, encoding='utf-8-sig')
                 updated_data = pd.concat([existing_data, pd.DataFrame([feedback_data])], ignore_index=True)
+                
                 # 임시 파일로 먼저 저장
                 temp_file = FEEDBACK_FILE + '.tmp'
-                updated_data.to_csv(temp_file, index=False, encoding='utf-8-sig')
-                # 성공적으로 저장되면 원본 파일 교체
-                os.replace(temp_file, FEEDBACK_FILE)
-                st.success(f"피드백이 성공적으로 업데이트되었습니다.")
+                try:
+                    updated_data.to_csv(temp_file, index=False, encoding='utf-8-sig')
+                    os.replace(temp_file, FEEDBACK_FILE)
+                    print(f"피드백 파일 업데이트됨: {FEEDBACK_FILE}")
+                    st.success("피드백이 성공적으로 업데이트되었습니다.")
+                except Exception as e:
+                    error_msg = f"임시 파일 저장/교체 중 오류 발생: {str(e)}"
+                    print(f"[ERROR] {error_msg}")
+                    st.error(error_msg)
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                    return
+                    
             except pd.errors.EmptyDataError:
                 # 빈 파일인 경우 새로 생성
-                pd.DataFrame([feedback_data]).to_csv(FEEDBACK_FILE, index=False, encoding='utf-8-sig')
-                st.success(f"피드백이 성공적으로 저장되었습니다.")
+                df = pd.DataFrame([feedback_data])
+                try:
+                    df.to_csv(FEEDBACK_FILE, index=False, encoding='utf-8-sig', mode='w')
+                    print(f"빈 파일 대체됨: {FEEDBACK_FILE}")
+                    st.success("피드백이 성공적으로 저장되었습니다.")
+                except Exception as e:
+                    error_msg = f"빈 파일 대체 중 오류 발생: {str(e)}"
+                    print(f"[ERROR] {error_msg}")
+                    st.error(error_msg)
+                    return
+                    
     except Exception as e:
         error_msg = f"피드백 저장 중 오류 발생: {str(e)}"
         print(f"[ERROR] {error_msg}")
@@ -99,21 +138,24 @@ def download_file_to_memory(service, file_id):
     return fh
 
 # CSV 파일 병합
-# 특수문자 및 큰 공백 처리 추가
 def merge_csv(files, service):
     dfs = []
     for file in files:
         df = pd.read_csv(download_file_to_memory(service, file['id']))
         # 특수문자 제거 및 큰 공백 처리
         for column in df.select_dtypes(include=['object']).columns:
-            # df[column] = df[column].str.replace(r'[^\w\s]', '', regex=True)  # 특수문자 제거
             df[column] = df[column].str.replace(r'\s+', ' ', regex=True).str.strip()  # 큰 공백 제거
+        
+        # summary 컬럼에서 "요약" 글씨 제거
+        if 'summary' in df.columns:
+            df['summary'] = df['summary'].str.replace(r'^요약\s*', '', regex=True)
+        
         dfs.append(df)
 
     merged_df = pd.concat(dfs, ignore_index=True)
     merged_df = merged_df.drop_duplicates(subset=['title'])  # title 열 기준으로 중복 제거
     merged_df.to_csv('merged_data.csv', index=False)
-    print("CSV files merged successfully with special character and whitespace handling.")
+    print("CSV files merged successfully.")
 
 # CSV 파일 로드 및 텍스트 분할
 def load_and_split_csv(file_path, column_name="content", chunk_size=2000, chunk_overlap=200):
@@ -177,7 +219,7 @@ def create_vectorstore(docs):
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
-# 임베딩 유사도를 기반으로 평가 (여러 문맥 사용)
+# 임베딩 유사도를 기반으로 평가
 def evaluate_with_embedding(output, contexts):
     """
     출력 결과와 여러 문맥(contexts)의 임베딩 유사도를 계산합니다.
@@ -185,19 +227,14 @@ def evaluate_with_embedding(output, contexts):
     model_name = "jhgan/ko-sbert-nli"
     embedding_model = HuggingFaceEmbeddings(model_name=model_name)
 
-    # 출력 결과 임베딩 계산
-    output_embedding = embedding_model.embed_query(output)
-
     # 각 문맥의 임베딩 계산 및 유사도 측정
     similarities = []
     for context in contexts:
-        context_embedding = embedding_model.embed_query(context)
         similarity = cosine_similarity(
-            [output_embedding], [context_embedding]
+            [embedding_model.embed_query(output)], [embedding_model.embed_query(context)]
         )[0][0]
         similarities.append(similarity)
 
-    # 가장 높은 유사도를 반환
     return max(similarities) if similarities else 0.0
 
 # RAG 체인 설정 및 실행
@@ -208,6 +245,10 @@ def run_rag_chain(retriever, query):
     1. 주어진 컨텍스트에서 질문에 관련된 정보를 검색합니다.
     2. 컨텍스트에서 찾을 수 있는 정보가 있으면, 그 정보를 바탕으로 답변을 작성합니다.
     3. 주어진 컨텍스트에서 찾을 수 없는 내용이라면, "주어진 컨텍스트에서는 답변할 수 없습니다."라고 답변합니다.
+    4. 답변은 한국어로 작성합니다.
+    6. 답변은 문맥을 바탕으로 작성하되, 문맥을 그대로 인용하지 않도록 합니다.
+    7. 답변은 질문에 대한 직접적인 답변을 포함해야 합니다.
+    8. 답변은 가능한 경우 예시를 포함해야 합니다.
 
     컨텍스트:
     {context}
@@ -232,7 +273,6 @@ def run_rag_chain(retriever, query):
     for chunk in rag_chain.stream(query):
         output += chunk
 
-    # 여러 문맥을 기반으로 임베딩 유사도 계산
     score = evaluate_with_embedding(output, contexts)
 
     return output, score, contexts
@@ -241,7 +281,6 @@ def keyword_search(query, merged_data):
     """
     키워드 기반 문서 검색 함수
     """
-    # 검색어를 소문자로 변환
     query = query.lower()
     keywords = query.split()
     
@@ -253,14 +292,13 @@ def keyword_search(query, merged_data):
     return merged_data[mask]
 
 def main():
-    # Streamlit 레이아웃 설정
     st.set_page_config(
-        page_title="NASDAQ RAG Chatbog",
+        page_title="NASDAQ RAG Chatbot",
         page_icon="🤖",
-        layout="wide"  # 본문을 넓게 설정
+        layout="wide"
     )
 
-    st.title("🤖 NASDAQ RAG Chatbog")
+    st.title("🤖 NASDAQ RAG Chatbot 💸")
 
     # 구글 드라이브 인증 및 CSV 파일 처리
     FOLDER_ID = os.getenv('FOLDER_ID')
@@ -284,7 +322,7 @@ def main():
             file_id = file['id']
             file_content = download_file_to_memory(service, file_id).getvalue()
 
-            # 날짜 추출 (예: 2023-04-10 형식)
+            # 날짜 추출 (2023-04-10 형식)
             date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', file_name)
             if date_match:
                 year, month, _ = date_match.groups()
@@ -294,7 +332,7 @@ def main():
                     file_tree[year][month] = []
                 file_tree[year][month].append((file_name, file_id, file_content))
 
-        # 트리 구조를 사이드바에 표시 (st.session_state 제거)
+        # 트리 구조를 사이드바에 표시
         for year, months in sorted(file_tree.items()):
             with st.sidebar.expander(f"📁 {year}"):
                 for month, files in sorted(months.items()):
@@ -317,7 +355,7 @@ def main():
             for i, file in enumerate(csv_files):
                 # 실제 처리 로직 (예: 파일 읽기 및 병합)
                 pd.read_csv(download_file_to_memory(service, file['id']))
-                progress = int(((i + 1) / total_files) * 100)  # 진행률 계산
+                progress = int(((i + 1) / total_files) * 100)
                 progress_bar.progress(progress)
             merge_csv(csv_files, service)
         st.success("✅ CSV 파일이 병합되었습니다.")
@@ -328,7 +366,7 @@ def main():
         try:
             merged_data = pd.read_csv("merged_data.csv")
             st.subheader("📊 병합된 CSV 데이터 미리보기")
-            st.dataframe(merged_data[['title', 'date', 'summary']].head())  # title, date, summary 열만 상위 10개 행 표시
+            st.dataframe(merged_data[['title', 'date', 'summary']].head())
         except Exception as e:
             st.error(f"🚨 병합된 CSV 파일을 로드하는 중 오류가 발생했습니다: {e}")
 
@@ -337,9 +375,8 @@ def main():
             with st.spinner("⏳ 벡터 저장소 생성 중..."):
                 docs = load_and_split_csv("merged_data.csv")
                 progress_bar = st.progress(0)
-                for i in range(2):  # 벡터화 시뮬레이션
-                    time.sleep(0.5)
-                    progress_bar.progress((i + 1) * 50)
+                for i in range(1):
+                    progress_bar.progress((i + 1) * 100)
                 retriever = create_vectorstore(docs)
                 st.session_state['retriever'] = retriever  # retriever를 session_state에 저장
             st.success("✅ 벡터 저장소가 생성되었습니다.")
@@ -355,7 +392,7 @@ def main():
             return
 
         # 검색 모드 선택
-        search_mode = st.radio("검색 모드 선택", ["의미 기반 검색", "키워드 검색"])
+        search_mode = st.radio("검색 모드 선택", ["의미 기반 검색", "키워드 검색","하이브리드 검색(기능 구현중)"])
         
         query = st.text_input("💬 검색어를 입력하세요:")
 
@@ -368,15 +405,15 @@ def main():
                         if not results.empty:
                             st.success(f"✅ {len(results)}개의 결과를 찾았습니다!")
                             for _, row in results.iterrows():
-                                with st.expander(f"📄 {row['title']} ({row['date']})"):
+                                with st.expander(f"📄 {row['title']}"):
                                     st.write("**요약:**", row['summary'])
-                                    st.write("**내용:**", row['content'][:500] + "...")
+                                    st.write("**내용:**", row['content'][:300] + "...")
                         else:
                             st.warning("검색 결과가 없습니다.")
                     except Exception as e:
                         st.error(f"🚨 키워드 검색 중 오류가 발생했습니다: {e}")
                 else:
-                    # 기존 의미 기반 검색 로직
+                    # 의미 기반 검색 로직
                     with st.spinner("⏳ RAG 체인을 실행 중입니다..."):
                         try:
                             output, score, contexts = run_rag_chain(retriever, query)
